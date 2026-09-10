@@ -13,12 +13,19 @@ export interface WorldEvents {
 }
 
 const MASS = 1;
-const GRAVITY = -9.2;
-const RESTITUTION = 0.34;
-const FRICTION = 0.34;
-const HAND_STIFFNESS = 340;
-const HAND_DAMPING = 26;
+// The branch reads as roughly a metre long, and it is 2.4 world units, so one
+// unit is ~0.42 m. Earth gravity at that scale is what makes a fall look real.
+const GRAVITY = -23.5;
+const RESTITUTION = 0.3;
+const FRICTION = 0.36;
+const HAND_STIFFNESS = 420;
+const HAND_DAMPING = 32;
+const LINEAR_DRAG = 0.06;
+const HELD_ANGULAR_DRAG = 0.9;
+const FREE_ANGULAR_DRAG = 0.22;
 const CONTACT_SAMPLES = 9;
+const FIXED_STEP = 1 / 240;
+const MAX_CATCH_UP = 0.1;
 
 // A stroke fires a whoosh when the tip speed rises past HIGH, and rearms once
 // it drops below LOW. Shaking therefore fires exactly once per stroke.
@@ -70,6 +77,10 @@ export class BatonWorld {
   private airRotation = 0;
   private airWhooshAt = 0;
   private restTimer = 0;
+  private accumulator = 0;
+  // Events are raised once per rendered frame, never once per physics substep.
+  private pendingImpact = 0;
+  private pendingCatch: number | null = null;
 
   private bounds = { minX: -3, maxX: 3, minY: -2, maxY: 2, minZ: -1.1, maxZ: 1.1 };
 
@@ -78,6 +89,15 @@ export class BatonWorld {
   private readonly tmpC = new THREE.Vector3();
   private readonly plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
   private readonly raycaster = new THREE.Raycaster();
+
+  // Scratch objects for the solver: it runs a few hundred times a second, so it
+  // must not allocate.
+  private readonly contactPoint = new THREE.Vector3();
+  private readonly ctR = new THREE.Vector3();
+  private readonly ctVelocity = new THREE.Vector3();
+  private readonly ctCross = new THREE.Vector3();
+  private readonly ctTangent = new THREE.Vector3();
+  private readonly spinQuaternion = new THREE.Quaternion();
 
   constructor(gl: WebGL2RenderingContext & { endFrameEXP?: () => void }, events: WorldEvents) {
     this.gl = gl;
@@ -258,22 +278,40 @@ export class BatonWorld {
   }
 
   update(dt: number) {
-    const step = Math.min(dt, 1 / 30);
-
-    if (this.held) {
-      this.applyHandForces(step);
+    // The hand spring is stiff, so integrate at a fixed small step: frame-rate
+    // sized steps make it buzz on slow frames and drift on fast ones.
+    this.accumulator = Math.min(this.accumulator + dt, MAX_CATCH_UP);
+    while (this.accumulator >= FIXED_STEP) {
+      this.step(FIXED_STEP);
+      this.accumulator -= FIXED_STEP;
     }
 
-    this.velocity.y += GRAVITY * step;
-    this.velocity.multiplyScalar(Math.exp(-0.12 * step));
-    this.angularVelocity.multiplyScalar(Math.exp(-(this.held ? 2.6 : 0.35) * step));
+    if (this.pendingImpact > 0) {
+      this.events.onImpact(Math.min(1, this.pendingImpact / 14));
+      this.pendingImpact = 0;
+    }
+    if (this.pendingCatch !== null) {
+      const turns = this.pendingCatch;
+      this.pendingCatch = null;
+      if (turns > 0.4) this.events.onCatch(turns, this.projectToScreen(this.position));
+    }
 
-    this.position.addScaledVector(this.velocity, step);
-    this.integrateRotation(step);
-    this.resolveContacts(step);
-
-    this.trackSwings(step);
+    this.trackSwings(dt);
     this.updateTransforms();
+  }
+
+  private step(dt: number) {
+    if (this.held) this.applyHandForces(dt);
+
+    this.velocity.y += GRAVITY * dt;
+    this.velocity.multiplyScalar(Math.exp(-LINEAR_DRAG * dt));
+    this.angularVelocity.multiplyScalar(Math.exp(-(this.held ? HELD_ANGULAR_DRAG : FREE_ANGULAR_DRAG) * dt));
+
+    this.position.addScaledVector(this.velocity, dt);
+    this.integrateRotation(dt);
+    this.resolveContacts(dt);
+
+    if (this.airborne) this.airRotation += this.angularVelocity.length() * dt;
   }
 
   private applyHandForces(dt: number) {
@@ -297,7 +335,7 @@ export class BatonWorld {
 
   private integrateRotation(dt: number) {
     const w = this.angularVelocity;
-    const spin = new THREE.Quaternion(w.x * dt * 0.5, w.y * dt * 0.5, w.z * dt * 0.5, 0).multiply(this.quaternion);
+    const spin = this.spinQuaternion.set(w.x * dt * 0.5, w.y * dt * 0.5, w.z * dt * 0.5, 0).multiply(this.quaternion);
     this.quaternion.set(
       this.quaternion.x + spin.x,
       this.quaternion.y + spin.y,
@@ -309,7 +347,7 @@ export class BatonWorld {
 
   private resolveContacts(dt: number) {
     let strongest = 0;
-    const point = new THREE.Vector3();
+    const point = this.contactPoint;
     const b = this.bounds;
     const r = this.radius;
 
@@ -317,17 +355,16 @@ export class BatonWorld {
       const t = (i / (CONTACT_SAMPLES - 1)) * 2 - 1;
       this.pointAt(t, point);
 
-      const depths = [
-        point.y - r - b.minY,
-        b.maxY - r - point.y,
-        point.x - r - b.minX,
-        b.maxX - r - point.x,
-        point.z - r - b.minZ,
-        b.maxZ - r - point.z,
-      ];
-
       for (let f = 0; f < FACE_NORMALS.length; f++) {
-        const depth = depths[f];
+        let depth: number;
+        switch (f) {
+          case 0: depth = point.y - r - b.minY; break;
+          case 1: depth = b.maxY - r - point.y; break;
+          case 2: depth = point.x - r - b.minX; break;
+          case 3: depth = b.maxX - r - point.x; break;
+          case 4: depth = point.z - r - b.minZ; break;
+          default: depth = b.maxZ - r - point.z; break;
+        }
         if (depth >= 0) continue;
         const n = FACE_NORMALS[f];
         this.position.addScaledVector(n, -depth * 0.6);
@@ -336,13 +373,13 @@ export class BatonWorld {
       }
     }
 
-    if (strongest > 1.4) {
-      this.events.onImpact(Math.min(1, strongest / 9));
+    if (strongest > 2.5) {
+      this.pendingImpact = Math.max(this.pendingImpact, strongest);
     }
 
     // Let a resting stick actually come to rest instead of jittering forever.
     const energy = this.velocity.length() + this.angularVelocity.length();
-    if (!this.held && energy < 0.85) {
+    if (!this.held && energy < 1.1) {
       this.restTimer += dt;
       this.velocity.multiplyScalar(Math.exp(-6 * dt));
       this.angularVelocity.multiplyScalar(Math.exp(-6 * dt));
@@ -353,27 +390,27 @@ export class BatonWorld {
   }
 
   private applyContactImpulse(point: THREE.Vector3, n: THREE.Vector3): number {
-    const r = new THREE.Vector3().copy(point).sub(this.position);
-    const pointVelocity = new THREE.Vector3().copy(r).cross(this.angularVelocity).negate().add(this.velocity);
+    const r = this.ctR.copy(point).sub(this.position);
+    const pointVelocity = this.ctVelocity.copy(r).cross(this.angularVelocity).negate().add(this.velocity);
     const vn = pointVelocity.dot(n);
     if (vn >= 0) return 0;
 
-    const rn = new THREE.Vector3().copy(r).cross(n);
+    const rn = this.ctCross.copy(r).cross(n);
     const denom = 1 / MASS + rn.dot(rn) / this.inertia;
     const j = (-(1 + RESTITUTION) * vn) / denom;
 
     this.velocity.addScaledVector(n, j / MASS);
-    this.angularVelocity.addScaledVector(new THREE.Vector3().copy(r).cross(n).multiplyScalar(j), 1 / this.inertia);
+    this.angularVelocity.addScaledVector(rn, j / this.inertia);
 
-    const tangent = new THREE.Vector3().copy(pointVelocity).addScaledVector(n, -vn);
+    const tangent = this.ctTangent.copy(pointVelocity).addScaledVector(n, -vn);
     const tangentSpeed = tangent.length();
     if (tangentSpeed > 1e-4) {
       tangent.multiplyScalar(-1 / tangentSpeed);
-      const rt = new THREE.Vector3().copy(r).cross(tangent);
+      const rt = this.ctCross.copy(r).cross(tangent);
       const denomT = 1 / MASS + rt.dot(rt) / this.inertia;
       const jt = THREE.MathUtils.clamp(tangentSpeed / denomT, 0, FRICTION * j);
       this.velocity.addScaledVector(tangent, jt / MASS);
-      this.angularVelocity.addScaledVector(rt.multiplyScalar(jt), 1 / this.inertia);
+      this.angularVelocity.addScaledVector(rt, jt / this.inertia);
     }
 
     return -vn;
@@ -415,12 +452,9 @@ export class BatonWorld {
   }
 
   private finishThrow() {
-    const turns = this.airRotation / (Math.PI * 2);
+    this.pendingCatch = this.airRotation / (Math.PI * 2);
     this.airborne = false;
     this.airRotation = 0;
-    if (turns > 0.4) {
-      this.events.onCatch(turns, this.projectToScreen(this.position));
-    }
   }
 
   private updateTransforms() {

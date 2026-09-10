@@ -22,6 +22,13 @@ interface Popup {
 export default function PlayArea({ skin, onSwing }: Props) {
   const [popups, setPopups] = useState<Popup[]>([]);
   const popupIdRef = useRef(0);
+  const pendingRef = useRef<{ amount: number; x: number; y: number; shownAt: number; timer: any }>({
+    amount: 0,
+    x: 0,
+    y: 0,
+    shownAt: 0,
+    timer: null,
+  });
   const skinRef = useRef(skin);
   skinRef.current = skin;
   const onSwingRef = useRef(onSwing);
@@ -30,10 +37,36 @@ export default function PlayArea({ skin, onSwing }: Props) {
   const spawnPopup = (text: string, x: number, y: number) => {
     const id = popupIdRef.current++;
     const anim = new Animated.Value(0);
-    setPopups((p) => [...p.slice(-8), { id, value: text, x, y, anim }]);
-    Animated.timing(anim, { toValue: 1, duration: 800, useNativeDriver: true }).start(() => {
+    setPopups((p) => [...p.slice(-5), { id, value: text, x, y, anim }]);
+    Animated.timing(anim, {
+      toValue: 1,
+      duration: 800,
+      // Web has no native animated module, and asking for one warns every time.
+      useNativeDriver: Platform.OS !== 'web',
+    }).start(() => {
       setPopups((p) => p.filter((pp) => pp.id !== id));
     });
+  };
+
+  /**
+   * Points are credited on every stroke, but a label per stroke would re-render
+   * the tree a dozen times a second while shaking, so they are pooled.
+   */
+  const queuePopup = (amount: number, x: number, y: number) => {
+    const pending = pendingRef.current;
+    pending.amount += amount;
+    pending.x = x;
+    pending.y = y;
+    if (pending.timer !== null) return;
+    const elapsed = Date.now() - pending.shownAt;
+    const wait = Math.max(0, 220 - elapsed);
+    pending.timer = setTimeout(() => {
+      pending.timer = null;
+      pending.shownAt = Date.now();
+      const total = pending.amount;
+      pending.amount = 0;
+      spawnPopup(`+${Math.round(total)}`, pending.x, pending.y);
+    }, wait);
   };
 
   const events = useMemo(
@@ -54,7 +87,7 @@ export default function PlayArea({ skin, onSwing }: Props) {
               : Haptics.ImpactFeedbackStyle.Light;
           Haptics.impactAsync(style).catch(() => {});
         }
-        spawnPopup(`+${Math.round(gained)}`, screen.x, screen.y);
+        queuePopup(gained, screen.x, screen.y);
       },
       onImpact: (strength: number) => {
         playSwingSound(IMPACT_SOUND, 0.25 + strength * 0.6, 0.85 + strength * 0.35);

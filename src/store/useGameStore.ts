@@ -35,10 +35,15 @@ export function useGameStore() {
     })();
   }, []);
 
+  // Saving is debounced: a vigorous shake changes the state a dozen times a
+  // second, and on web every save is a synchronous localStorage write.
   useEffect(() => {
     if (!state.hydrated) return;
-    const { hydrated, ...toSave } = state;
-    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(toSave)).catch(() => {});
+    const timer = setTimeout(() => {
+      const { hydrated, ...toSave } = stateRef.current;
+      AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(toSave)).catch(() => {});
+    }, 700);
+    return () => clearTimeout(timer);
   }, [state]);
 
   const addSwing = useCallback((intensityFactor: number) => {

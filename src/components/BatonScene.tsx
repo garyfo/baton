@@ -41,12 +41,13 @@ export default function BatonScene({ skin, events }: Props) {
     world.setSize(gl.drawingBufferWidth, gl.drawingBufferHeight, layoutRef.current.width, layoutRef.current.height);
     world.setSkin(skinRef.current);
 
-    let last = Date.now();
+    let last = 0;
     let bufferWidth = gl.drawingBufferWidth;
     let bufferHeight = gl.drawingBufferHeight;
-    const loop = () => {
-      const now = Date.now();
-      const dt = Math.max(0.001, (now - last) / 1000);
+    // requestAnimationFrame hands us a high-resolution, vsync-aligned timestamp;
+    // Date.now() is coarse enough to make the motion stutter.
+    const loop = (now: number) => {
+      const dt = last === 0 ? 1 / 60 : Math.max(0.001, (now - last) / 1000);
       last = now;
       // The canvas backing store is resized outside React (and asynchronously
       // on web), so track it here rather than reacting to layout.

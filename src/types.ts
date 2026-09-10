@@ -5,11 +5,20 @@ export interface SkinDef {
   name: string;
   description: string;
   cost: number;
+  /** Gradient used for the shop swatch. */
   colors: [string, string];
-  glow?: string;
-  length: number;
-  width: number;
   sound: any;
+  /** A gnarled branch, or a smooth manufactured rod. */
+  shape: 'branch' | 'rod';
+  surfaceColor: string;
+  endColor: string;
+  roughness: number;
+  metalness: number;
+  emissive?: string;
+  emissiveIntensity?: number;
+  /** Whether to generate procedural bark / growth-ring textures. */
+  textured: boolean;
+  textureSeed?: number;
 }
 
 export type UpgradeId = 'grip' | 'titanium' | 'wind' | 'dragon';

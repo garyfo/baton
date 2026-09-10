@@ -7,6 +7,7 @@
     "@react-native-async-storage/async-storage": "^3.1.1",
     "expo": "~57.0.21",
     "expo-audio": "^57.0.4",
+    "expo-gl": "^57.0.2",
     "expo-haptics": "^57.0.2",
     "expo-linear-gradient": "^57.0.1",
     "expo-sensors": "^57.0.2",
@@ -15,10 +16,12 @@
     "react-dom": "^19.2.3",
     "react-native": "0.86.3",
     "react-native-svg": "^15.15.5",
-    "react-native-web": "^0.21.2"
+    "react-native-web": "^0.21.2",
+    "three": "^0.186.0"
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
+    "@types/three": "^0.185.4",
     "typescript": "~6.0.3"
   },
   "scripts": {

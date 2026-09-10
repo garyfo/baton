@@ -5,6 +5,13 @@ import { CLICK_SOUND } from './config';
 const POOL_SIZE = 4;
 const pools = new Map<any, { players: AudioPlayer[]; index: number }>();
 let audioModeReady = false;
+// Browsers reject playback before the first user gesture, and the stick makes
+// noise on its own (it drops and bounces), so stay silent until first touch.
+let unlocked = Platform.OS !== 'web';
+
+export function unlockAudio() {
+  unlocked = true;
+}
 
 async function ensureAudioMode() {
   if (audioModeReady) return;
@@ -27,6 +34,7 @@ function getPool(source: any) {
 }
 
 export function playSwingSound(source: any, volume: number, rate: number) {
+  if (!unlocked) return;
   ensureAudioMode();
   const pool = getPool(source);
   const player = pool.players[pool.index];
@@ -43,6 +51,7 @@ export function playSwingSound(source: any, volume: number, rate: number) {
 
 let clickPlayer: AudioPlayer | null = null;
 export function playClickSound() {
+  unlocked = true;
   ensureAudioMode();
   try {
     if (!clickPlayer) clickPlayer = createAudioPlayer(CLICK_SOUND);

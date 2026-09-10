@@ -200,6 +200,27 @@ function normalize(arr, peak = 0.9) {
   writeWav('rainbow.wav', normalize(out));
 }
 
+// --- Wood knock, played when the stick hits the ground or a wall.
+{
+  const duration = 0.22;
+  const n = Math.floor(SAMPLE_RATE * duration);
+  const out = new Float32Array(n);
+  // A few inharmonic modes: what a hollow-ish piece of wood actually rings at.
+  const modes = [196, 331, 512, 743];
+  const rand = seededRandom(2024);
+  for (let i = 0; i < n; i++) {
+    const t = i / SAMPLE_RATE;
+    let sample = 0;
+    modes.forEach((freq, idx) => {
+      sample += Math.sin(2 * Math.PI * freq * t) * Math.exp(-t * (26 + idx * 14)) * (0.5 / (idx + 1));
+    });
+    // Contact click at the very start.
+    sample += (rand() * 2 - 1) * Math.exp(-t * 320) * 0.7;
+    out[i] = sample;
+  }
+  writeWav('impact.wav', normalize(out));
+}
+
 // --- UI click for shop purchases / equips.
 {
   const duration = 0.12;
